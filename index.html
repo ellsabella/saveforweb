@@ -49,10 +49,16 @@ header .hint{color:var(--muted);font-size:13px;flex:1 1 200px}
 main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 348px}
 .stage{display:flex;flex-direction:column;min-width:0;min-height:0}
 .toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;padding:6px 16px;border-bottom:1px solid var(--line);font-size:13px;color:var(--muted)}
-.toolbar select{padding:2px 4px}
+.zoomctl{display:flex;align-items:center;gap:4px}
+.zoomctl .zb{border:1px solid var(--line);background:var(--field);border-radius:4px;cursor:pointer;padding:2px 8px;line-height:1.4;font-weight:600}
+.zoomctl .zb:hover{border-color:var(--ink)}
+.zoomctl .zb[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.zoomctl .zpct{width:56px;text-align:right;padding:2px 4px;border:1px solid var(--line);background:var(--field);border-radius:4px}
+.toolbar kbd{font:inherit;font-size:12px;padding:0 4px;border:1px solid var(--line);border-radius:3px;background:var(--field)}
 .panes{flex:1;min-height:0;display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line)}
 .pane{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--bg)}
-.vp{flex:1;min-height:0;overflow:auto;background:var(--stage);display:grid;place-items:center;padding:12px}
+.vp{flex:1;min-height:0;overflow:auto;background:var(--stage);display:grid;place-items:center;padding:12px;cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none}
+.vp.panning{cursor:grabbing}
 .vp.drag{outline:3px dashed var(--accent);outline-offset:-8px}
 .vp canvas{display:block;background-color:#fff;
   background-image:linear-gradient(45deg,#c9c9c9 25%,transparent 25%,transparent 75%,#c9c9c9 75%),linear-gradient(45deg,#c9c9c9 25%,transparent 25%,transparent 75%,#c9c9c9 75%);
@@ -113,12 +119,15 @@ input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px;margin:0}
 <main>
   <div class="stage">
     <div class="toolbar">
-      <label for="zoom">Zoom</label>
-      <select id="zoom" style="width:auto">
-        <option value="fit">Fit</option><option value="0.25">25%</option><option value="0.5">50%</option>
-        <option value="1">100%</option><option value="2">200%</option><option value="4">400%</option><option value="8">800%</option>
-      </select>
-      <span>Both panes scroll together.</span>
+      <label for="zoomPct">Zoom</label>
+      <div class="zoomctl" role="group" aria-label="Zoom">
+        <button class="zb" id="zoomOut" type="button" title="Zoom out (Ctrl −)" aria-label="Zoom out">−</button>
+        <input class="zpct" id="zoomPct" inputmode="decimal" aria-label="Zoom percent" value="100"><span>%</span>
+        <button class="zb" id="zoomIn" type="button" title="Zoom in (Ctrl +)" aria-label="Zoom in">+</button>
+        <button class="zb" id="zoomFit" type="button" title="Fit in window (Ctrl 0)" aria-pressed="true">Fit</button>
+        <button class="zb" id="zoom100" type="button" title="Actual pixels (Ctrl 1)">100%</button>
+      </div>
+      <span>Drag to pan · <kbd>Ctrl</kbd>+scroll or pinch to zoom · double-click toggles Fit / 100% · both panes move together.</span>
     </div>
     <div class="panes">
       <div class="pane">
@@ -624,18 +633,102 @@ function report(g, r, ms) {
     $('tableN').textContent = '· ' + r.q.palette.length; }
 }
 
-/* ---------- zoom and synced scrolling ---------- */
-function applyZoom() {
-  const a = $('cvA'), b = $('cvB'), vp = $('vpA');
-  let z = zoom === 'fit' ? Math.min(1, (vp.clientWidth - 24) / a.width, (vp.clientHeight - 24) / a.height) : +zoom;
-  if (!(z > 0)) z = 1;
-  for (const c of [a, b]) { c.style.width = Math.max(1, Math.round(a.width * z)) + 'px'; c.style.height = Math.max(1, Math.round(a.height * z)) + 'px'; c.style.imageRendering = z > 1 ? 'pixelated' : 'auto'; }
+/* ---------- zoom, pan and synced scrolling ----------
+   `zoom` is 'fit' or a number; `zNow` is the effective numeric scale. Both panes always share
+   the same scale and scroll position. Zooming keeps the image point under the pointer (or the
+   viewport centre) fixed, like Photoshop's Save for Web preview. */
+const VPS = [$('vpA'), $('vpB')], CVS = [$('cvA'), $('cvB')];
+const ZOOM_STEPS = [.125, .25, .33, .5, .67, 1, 2, 3, 4, 8, 16], ZMIN = .05, ZMAX = 32;
+let zNow = 1;
+function fitZoom() { const vp = VPS[0], a = CVS[0], z = Math.min(1, (vp.clientWidth - 24) / a.width, (vp.clientHeight - 24) / a.height); return z > 0 ? z : 1; }
+function cvOf(vp) { return CVS[VPS.indexOf(vp)]; }
+function imgPoint(vp, cx, cy) { const r = cvOf(vp).getBoundingClientRect(); return [(cx - r.left) / zNow, (cy - r.top) / zNow]; }   // client → image px
+function placeAt(vp, ix, iy, cx, cy) {   // scroll both panes so image point (ix,iy) sits at client (cx,cy)
+  const r = cvOf(vp).getBoundingClientRect();
+  const sl = vp.scrollLeft + (r.left + ix * zNow - cx), st = vp.scrollTop + (r.top + iy * zNow - cy);
+  for (const v of VPS) { v.scrollLeft = sl; v.scrollTop = st; }
 }
-{ let busy = false; const A = $('vpA'), B = $('vpB');
-  const link = (p, q) => p.addEventListener('scroll', () => { if (busy) return; busy = true; q.scrollLeft = p.scrollLeft; q.scrollTop = p.scrollTop; requestAnimationFrame(() => busy = false); });
-  link(A, B); link(B, A); }
-$('zoom').addEventListener('change', e => { zoom = e.target.value; applyZoom(); });
+function rescale() {
+  zNow = zoom === 'fit' ? fitZoom() : +zoom;
+  const a = CVS[0], w = Math.max(1, Math.round(a.width * zNow)) + 'px', h = Math.max(1, Math.round(a.height * zNow)) + 'px';
+  for (const c of CVS) { c.style.width = w; c.style.height = h; c.style.imageRendering = zNow > 1 ? 'pixelated' : 'auto'; }
+  const inp = $('zoomPct'); if (document.activeElement !== inp) inp.value = zNow >= .1 ? Math.round(zNow * 100) : (zNow * 100).toFixed(1);
+  $('zoomFit').setAttribute('aria-pressed', zoom === 'fit');
+  $('zoom100').setAttribute('aria-pressed', zoom !== 'fit' && Math.abs(zNow - 1) < 1e-6);
+}
+function applyZoom(anchor) {   // anchor: {vp, x, y} in client coords; defaults to the centre of the left pane
+  const vp = anchor ? anchor.vp : VPS[0], vr = vp.getBoundingClientRect();
+  const cx = anchor ? anchor.x : vr.left + vp.clientWidth / 2, cy = anchor ? anchor.y : vr.top + vp.clientHeight / 2;
+  const [ix, iy] = imgPoint(vp, cx, cy);
+  rescale(); placeAt(vp, ix, iy, cx, cy);
+}
+function setZoom(z, anchor) { if (!(z > 0)) return; zoom = Math.min(ZMAX, Math.max(ZMIN, z)); applyZoom(anchor); }
+function stepZoom(dir, anchor) {
+  const next = dir > 0 ? ZOOM_STEPS.find(s => s > zNow * 1.001) : [...ZOOM_STEPS].reverse().find(s => s < zNow * .999);
+  setZoom(next !== undefined ? next : zNow * (dir > 0 ? 2 : .5), anchor);
+}
+function fitView() { zoom = 'fit'; applyZoom(); }
+
+// toolbar
+$('zoomIn').addEventListener('click', () => stepZoom(1));
+$('zoomOut').addEventListener('click', () => stepZoom(-1));
+$('zoomFit').addEventListener('click', fitView);
+$('zoom100').addEventListener('click', () => setZoom(1));
+$('zoomPct').addEventListener('change', e => { const v = parseFloat(e.target.value); if (v > 0) setZoom(v / 100); else rescale(); e.target.blur(); });
+$('zoomPct').addEventListener('keydown', e => { if (e.key === 'Enter') e.target.blur(); else if (e.key === 'Escape') { rescale(); e.target.blur(); } });
 addEventListener('resize', () => { if (zoom === 'fit') applyZoom(); });
+
+// keyboard: Ctrl/Cmd + / − / 0 (fit) / 1 (100%), as in Photoshop
+addEventListener('keydown', e => {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey || /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
+  const k = e.key;
+  if (k === '=' || k === '+') stepZoom(1); else if (k === '-' || k === '_') stepZoom(-1);
+  else if (k === '0') fitView(); else if (k === '1') setZoom(1); else return;
+  e.preventDefault();
+});
+
+// synced native scrolling (wheel, scrollbars)
+{ let busy = false;
+  const link = (p, q) => p.addEventListener('scroll', () => { if (busy) return; busy = true; q.scrollLeft = p.scrollLeft; q.scrollTop = p.scrollTop; requestAnimationFrame(() => busy = false); });
+  link(VPS[0], VPS[1]); link(VPS[1], VPS[0]); }
+
+for (const vp of VPS) {
+  // Ctrl/⌘/Alt + wheel, or trackpad pinch (arrives as a ctrlKey wheel), zooms around the pointer; a plain wheel scrolls
+  vp.addEventListener('wheel', e => {
+    if (!(e.ctrlKey || e.metaKey || e.altKey)) return;
+    e.preventDefault();
+    const k = e.deltaMode === 1 ? .05 : e.deltaMode === 2 ? .5 : .0025;
+    setZoom(zNow * Math.exp(-e.deltaY * k), { vp, x: e.clientX, y: e.clientY });
+  }, { passive: false });
+
+  // double-click toggles Fit and 100% at the clicked point
+  vp.addEventListener('dblclick', e => { if (zoom === 'fit') setZoom(1, { vp, x: e.clientX, y: e.clientY }); else fitView(); });
+
+  // drag to pan (mouse, pen, touch); two touches pinch to zoom
+  const pts = new Map(); let pan = null, pinch = null;
+  const mid = () => { const [p, q] = [...pts.values()]; return { x: (p.clientX + q.clientX) / 2, y: (p.clientY + q.clientY) / 2, d: Math.hypot(p.clientX - q.clientX, p.clientY - q.clientY) }; };
+  const startPan = e => pan = { x: e.clientX, y: e.clientY, sl: vp.scrollLeft, st: vp.scrollTop };
+  vp.addEventListener('pointerdown', e => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    const r = vp.getBoundingClientRect(); if (e.clientX - r.left > vp.clientWidth || e.clientY - r.top > vp.clientHeight) return;   // on a scrollbar
+    try { vp.setPointerCapture(e.pointerId); } catch (_) {}
+    pts.set(e.pointerId, e); vp.classList.add('panning');
+    if (pts.size === 1) { startPan(e); pinch = null; }
+    else if (pts.size === 2) { const m = mid(), [ix, iy] = imgPoint(vp, m.x, m.y); pinch = { d0: m.d, z0: zNow, ix, iy }; pan = null; }
+    e.preventDefault();
+  });
+  vp.addEventListener('pointermove', e => {
+    if (!pts.has(e.pointerId)) return; pts.set(e.pointerId, e);
+    if (pinch && pts.size >= 2) { const m = mid(); zoom = Math.min(ZMAX, Math.max(ZMIN, pinch.z0 * m.d / pinch.d0)); rescale(); placeAt(vp, pinch.ix, pinch.iy, m.x, m.y); }
+    else if (pan) { const sl = pan.sl - (e.clientX - pan.x), st = pan.st - (e.clientY - pan.y); for (const v of VPS) { v.scrollLeft = sl; v.scrollTop = st; } }
+  });
+  const end = e => {
+    if (!pts.delete(e.pointerId)) return;
+    if (pts.size === 1) { pinch = null; startPan([...pts.values()][0]); }
+    else if (pts.size === 0) { pan = pinch = null; vp.classList.remove('panning'); }
+  };
+  vp.addEventListener('pointerup', end); vp.addEventListener('pointercancel', end);
+}
 
 /* ---------- controls ---------- */
 function syncUI() {
@@ -710,7 +803,7 @@ async function load(file) {
   } catch (e) { $('hint').textContent = 'Could not decode ' + (file.name || 'that image') + '. It may be damaged or in an unsupported format.'; }
 }
 function setSource(canvas, name, bytes) {
-  src = { canvas, name, bytes }; geo = null;
+  src = { canvas, name, bytes }; geo = null; zoom = 'fit';   // a new image starts fitted
   S.cw = canvas.width; S.ch = canvas.height; S.sx = S.sy = 1; S.ax = S.ay = 1;
   syncUI(); schedule(0);
 }
