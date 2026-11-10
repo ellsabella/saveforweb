@@ -737,8 +737,19 @@ $('save').addEventListener('click', async () => {
   document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
 });
 
-/* ---------- sample image (clearly labelled) ---------- */
-function sample() {
+/* ---------- default image: fourlayertest.png, falling back to a drawn sample if it cannot be fetched ---------- */
+async function sample() {
+  try {
+    const r = await fetch('fourlayertest.png');
+    if (!r.ok) throw new Error(r.status);
+    const blob = await r.blob(), bmp = await createImageBitmap(blob);
+    const c = mk(bmp.width, bmp.height); c.getContext('2d').drawImage(bmp, 0, 0);
+    setSource(c, 'fourlayertest.png', blob.size);
+    return;
+  } catch (e) { /* fall through to the generated sample (e.g. when opened from file://) */ }
+  drawnSample();
+}
+function drawnSample() {
   const w = 720, h = 460, c = mk(w, h), x = c.getContext('2d');
   let g = x.createLinearGradient(0, 0, 0, h); g.addColorStop(0, '#1d2f6f'); g.addColorStop(.55, '#e2718c'); g.addColorStop(1, '#ffd9a0');
   x.fillStyle = g; x.fillRect(0, 0, w, h);
