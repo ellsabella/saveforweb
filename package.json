@@ -1,0 +1,9 @@
+{
+  "name": "web-image-export",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Browser-based PNG/JPEG optimiser modelled on Photoshop's Save for Web (Legacy). Static site, no build step.",
+  "scripts": {
+    "dev": "npx serve ."
+  }
+}
