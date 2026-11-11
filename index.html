@@ -87,7 +87,7 @@ input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px;margin:0}
 .anchor button{width:20px;height:20px;border:1px solid var(--line);background:var(--field);border-radius:3px;padding:0;cursor:pointer}
 .anchor button[aria-pressed=true]{background:var(--accent);border-color:var(--accent)}
 .note{color:var(--muted);font-size:12px;margin:0}
-.seg{display:grid;grid-template-columns:repeat(3,1fr);border:1px solid var(--line);border-radius:5px;overflow:hidden}
+.seg{display:grid;grid-template-columns:repeat(4,1fr);border:1px solid var(--line);border-radius:5px;overflow:hidden}
 .seg button{border:0;background:var(--field);padding:7px 0;cursor:pointer;font-weight:600;border-left:1px solid var(--line)}
 .seg button:first-child{border-left:0}
 .seg button[aria-pressed=true]{background:var(--ink);color:var(--panel)}
@@ -110,7 +110,7 @@ input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px;margin:0}
 <body>
 <header>
   <h1>Web Image <span>Export</span></h1>
-  <span class="hint" id="hint">Showing a sample image. Open, drop or paste a PNG or JPEG. Nothing leaves your browser.</span>
+  <span class="hint" id="hint">Showing a sample image. Open, drop or paste a PNG, JPEG or WebP. Nothing leaves your browser.</span>
   <input type="file" id="file" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp" hidden>
   <button class="btn" id="open" type="button">Open image…</button>
   <button class="btn primary" id="save" type="button">Save optimised file</button>
@@ -155,11 +155,14 @@ input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px;margin:0}
         <option value="j-high">JPEG High</option>
         <option value="j-med">JPEG Medium</option>
         <option value="j-low">JPEG Low</option>
+        <option value="w-high">WebP High</option>
+        <option value="w-med">WebP Medium</option>
       </select>
       <div class="seg" role="group" aria-label="File format">
         <button type="button" data-fmt="png8">PNG-8</button>
         <button type="button" data-fmt="png24">PNG-24</button>
         <button type="button" data-fmt="jpeg">JPEG</button>
+        <button type="button" data-fmt="webp">WebP</button>
       </div>
     </section>
 
@@ -190,12 +193,12 @@ input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px;margin:0}
     </section>
 
     <section id="secJ">
-      <h2>JPEG</h2>
+      <h2 id="qTitle">JPEG</h2>
       <div class="row"><label for="quality">Quality</label>
         <div class="pair"><input type="range" id="quality_r" min="0" max="100"><input type="number" id="quality" min="0" max="100"></div></div>
       <div class="row"><label for="blur">Blur px</label>
         <div class="pair"><input type="range" id="blur_r" min="0" max="2" step="0.1"><input type="number" id="blur" min="0" max="2" step="0.1"></div></div>
-      <p class="note">Encoded by your browser's JPEG encoder, so Progressive and Optimized switches are not available.</p>
+      <p class="note" id="qNote"></p>
     </section>
 
     <section id="secT">
@@ -237,7 +240,7 @@ input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px;margin:0}
       <h2>Optimise to file size</h2>
       <div class="row"><label for="target">Target KB</label>
         <div class="pair"><input type="number" id="target" min="1" value="50"><button class="btn" id="fit" type="button" style="padding:4px 0">Fit</button></div></div>
-      <p class="note">JPEG lowers quality, PNG-8 lowers the colour count, until the file fits.</p>
+      <p class="note">Finds the highest JPEG or WebP quality, or PNG-8 colour count, that fits.</p>
       <div id="msg" role="status"></div>
     </section>
   </aside>
@@ -535,6 +538,8 @@ const PRESETS = {
   'j-high':  { format: 'jpeg', quality: 60, blur: 0 },
   'j-med':   { format: 'jpeg', quality: 30, blur: 0 },
   'j-low':   { format: 'jpeg', quality: 10, blur: 0 },
+  'w-high':  { format: 'webp', quality: 80, blur: 0 },
+  'w-med':   { format: 'webp', quality: 50, blur: 0 },
 };
 
 function mk(w, h) { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
@@ -575,12 +580,16 @@ async function encode(s, g) {
       for (let p = 0; p < d.length; p += 4) { const f = d[p + 3] / 255, k = 1 - f; d[p] = d[p] * f + mr * k; d[p + 1] = d[p + 1] * f + mg * k; d[p + 2] = d[p + 2] * f + mb * k; d[p + 3] = 255; } }
     return { blob: await pngTrue(d, w, h, alpha), ext: 'png', rgba: d, alpha };
   }
+  // JPEG and WebP both come from the browser's own encoder. WebP can keep the alpha channel.
+  const webp = s.format === 'webp', alpha = webp && s.transparency && g.alpha, mime = webp ? 'image/webp' : 'image/jpeg';
   const c = mk(w, h), x = c.getContext('2d');
-  x.fillStyle = s.matte; x.fillRect(0, 0, w, h);
+  if (!alpha) { x.fillStyle = s.matte; x.fillRect(0, 0, w, h); }
   if (s.blur > 0 && 'filter' in x) x.filter = `blur(${s.blur}px)`;
   x.drawImage(g.canvas, 0, 0);
-  const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', s.quality / 100));
-  return { blob, ext: 'jpg' };
+  const blob = await new Promise(r => c.toBlob(r, mime, s.quality / 100));
+  // A browser without a WebP encoder silently hands back a PNG instead.
+  if (!blob || blob.type !== mime) throw new Error(webp ? 'this browser cannot encode WebP. Try Chrome, Edge or Firefox.' : 'the browser returned no image.');
+  return { blob, ext: webp ? 'webp' : 'jpg', alpha };
 }
 
 function schedule(delay = 140) { clearTimeout(timer); timer = setTimeout(run, delay); }
@@ -597,7 +606,7 @@ async function run() {
     await paint(g, r);
     if (id !== runId) return;
     report(g, r, performance.now() - t0);
-  } catch (e) { $('rSub').textContent = 'Could not encode this image: ' + e.message; console.error(e); }
+  } catch (e) { result = null; $('rBig').textContent = '–'; $('rSub').textContent = 'Could not encode this image: ' + e.message; console.error(e); }
 }
 
 async function paint(g, r) {
@@ -621,7 +630,7 @@ function report(g, r, ms) {
   const pct = (size / src.bytes - 1) * 100;
   $('rBig').innerHTML = fmtBytes(size) + ' · ' + w + ' × ' + h + ' <span class="' + (pct <= 0 ? 'save' : 'grow') + '">' + (pct <= 0 ? '−' : '+') + Math.abs(pct).toFixed(0) + '%</span>';
   let d = S.format === 'png8' ? 'PNG-8 · ' + (n => n + (n === 1 ? ' colour' : ' colours'))(r.q.palette.length - (r.q.trans ? 1 : 0)) + (r.q.trans ? ' + transparent' : '') + (r.q.lossless ? ' · lossless (image has no more colours than this)' : S.dither !== 'none' && S.amount > 0 ? ' · ' + S.dither + ' dither' : '')
-        : S.format === 'png24' ? 'PNG-24 · lossless' + (r.alpha ? ' · alpha' : '') : 'JPEG · quality ' + S.quality;
+        : S.format === 'png24' ? 'PNG-24 · lossless' + (r.alpha ? ' · alpha' : '') : (S.format === 'webp' ? 'WebP' : 'JPEG') + ' · quality ' + S.quality + (r.alpha ? ' · alpha' : '');
   const secs = size * 8 / 1.5e6;
   $('rSub').textContent = d + ' · ' + (secs < 1 ? '<1' : secs.toFixed(0)) + ' s @ 1.5 Mbps · ' + ms.toFixed(0) + ' ms';
   // colour table
@@ -739,7 +748,10 @@ function syncUI() {
   $('cw').value = S.cw; $('ch').value = S.ch; $('iw').value = outW(); $('ih').value = outH();
   $('pct').value = +(S.sx * 100).toFixed(1);
   const p8 = S.format === 'png8', fixed = S.reduction === 'bw';
-  $('secP8').hidden = !p8; $('secTable').hidden = !p8; $('secJ').hidden = S.format !== 'jpeg';
+  $('secP8').hidden = !p8; $('secTable').hidden = !p8; const wp = S.format === 'webp'; $('secJ').hidden = S.format !== 'jpeg' && !wp;
+  $('qTitle').textContent = wp ? 'WebP' : 'JPEG';
+  $('qNote').textContent = wp ? "Encoded by your browser's WebP encoder. Safari cannot encode WebP."
+    : "Encoded by your browser's JPEG encoder, so Progressive and Optimized switches are not available.";
   $('rowTrans').hidden = S.format === 'jpeg';
   $('colors').disabled = $('colors_r').disabled = fixed;
   $('rowAmt').hidden = S.dither === 'none';
@@ -777,8 +789,8 @@ $('resetGeo').addEventListener('click', () => { S.cw = src.canvas.width; S.ch = 
 /* ---------- optimise to file size ---------- */
 $('fit').addEventListener('click', async () => {
   const kb = parseFloat($('target').value), msg = $('msg'); if (!(kb > 0) || !src) return;
-  if (S.format === 'png24') { msg.textContent = 'PNG-24 is lossless, so it has no setting to trade for size. Switch to PNG-8 or JPEG, or reduce the image size.'; return; }
-  const key = S.format === 'jpeg' ? 'quality' : 'colors', g = geometry(), bytes = kb * 1024;
+  if (S.format === 'png24') { msg.textContent = 'PNG-24 is lossless, so it has no setting to trade for size. Switch to PNG-8, JPEG or WebP, or reduce the image size.'; return; }
+  const key = S.format === 'png8' ? 'colors' : 'quality', g = geometry(), bytes = kb * 1024;
   if (S.format === 'png8' && S.reduction === 'bw') { msg.textContent = 'Black & White always uses 2 colours. Pick another algorithm first.'; return; }
   let lo = key === 'quality' ? 0 : 2, hi = key === 'quality' ? 100 : 256, best = -1;
   $('fit').disabled = true; msg.textContent = 'Searching…';
@@ -794,7 +806,7 @@ $('fit').addEventListener('click', async () => {
 
 /* ---------- open / drop / paste ---------- */
 async function load(file) {
-  if (!file || !/^image\//.test(file.type)) { $('hint').textContent = 'That file is not an image this browser can read. Try a PNG or JPEG.'; return; }
+  if (!file || !/^image\//.test(file.type)) { $('hint').textContent = 'That file is not an image this browser can read. Try a PNG, JPEG or WebP.'; return; }
   try {
     const bmp = await createImageBitmap(file);
     const c = mk(bmp.width, bmp.height); c.getContext('2d').drawImage(bmp, 0, 0);
