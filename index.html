@@ -568,7 +568,7 @@ function geometry() {
 }
 
 /* ---------- encoders ---------- */
-async function encode(s, g) {
+async function encode(s, g, stale) {
   const { img } = g, w = img.width, h = img.height;
   if (s.format === 'png8') {
     const q = quantize(img, s), blob = await pngIndexed(q);
@@ -586,10 +586,44 @@ async function encode(s, g) {
   if (!alpha) { x.fillStyle = s.matte; x.fillRect(0, 0, w, h); }
   if (s.blur > 0 && 'filter' in x) x.filter = `blur(${s.blur}px)`;
   x.drawImage(g.canvas, 0, 0);
-  const blob = await new Promise(r => c.toBlob(r, mime, s.quality / 100));
-  // A browser without a WebP encoder silently hands back a PNG instead.
-  if (!blob || blob.type !== mime) throw new Error(webp ? 'this browser cannot encode WebP. Try Chrome, Edge or Firefox.' : 'the browser returned no image.');
+  let blob = webp && !webpNative ? null : await new Promise(r => c.toBlob(r, mime, s.quality / 100));
+  // A browser without a WebP encoder (Safari) silently hands back a PNG instead: use the bundled one from then on.
+  if (webp && (!blob || blob.type !== mime)) { if (webpNative) { webpNative = false; syncUI(); } blob = await webpWasm(x.getImageData(0, 0, w, h), s.quality, stale); }
+  if (!blob || blob.type !== mime) throw new Error('the browser returned no image.');
   return { blob, ext: webp ? 'webp' : 'jpg', alpha };
+}
+
+/* Fallback WebP encoder: libwebp compiled to WebAssembly (vendor/webp, from @jsquash/webp), run in a worker
+   (webp-worker.js) and started only when the browser's canvas cannot encode WebP. Add ?wasmwebp to the URL to
+   force it in any browser. Jobs run one at a time; `stale` lets a queued job be skipped once a newer one exists. */
+let webpNative = !new URLSearchParams(location.search).has('wasmwebp'), webpWorker = null, webpJob = null, webpQueue = Promise.resolve();
+const WEBP_OPTS = { quality: 75, target_size: 0, target_PSNR: 0, method: 4, sns_strength: 50, filter_strength: 60, filter_sharpness: 0,
+  filter_type: 1, partitions: 0, segments: 4, pass: 1, show_compressed: 0, preprocessing: 0, autofilter: 0, partition_limit: 0,
+  alpha_compression: 1, alpha_filtering: 1, alpha_quality: 100, lossless: 0, exact: 0, image_hint: 0, emulate_jpeg_size: 0,
+  thread_level: 0, low_memory: 0, near_lossless: 100, use_delta_palette: 0, use_sharp_yuv: 0 };
+function webpWorkerFailed(e) {
+  if (e) console.error(e);
+  if (webpWorker) webpWorker.terminate();
+  webpWorker = null;
+  const j = webpJob; webpJob = null;
+  if (j) j.rej(new Error('this browser cannot encode WebP itself and the bundled encoder could not be loaded' + (location.protocol === 'file:' ? '. Serve the folder (npm run dev) instead of opening the file directly.' : '.')));
+}
+function webpWasm(img, quality, stale) {
+  const job = webpQueue.then(() => new Promise((res, rej) => {
+    if (stale && stale()) return rej(new Error('superseded'));
+    webpJob = { res, rej };
+    try {
+      if (!webpWorker) {
+        webpWorker = new Worker('webp-worker.js', { type: 'module' });
+        webpWorker.onmessage = e => { const j = webpJob; webpJob = null; if (!j) return;
+          if (e.data.error) j.rej(new Error(e.data.error)); else j.res(new Blob([e.data.out], { type: 'image/webp' })); };
+        webpWorker.onerror = webpWorker.onmessageerror = webpWorkerFailed;
+      }
+      webpWorker.postMessage({ data: img.data.buffer, width: img.width, height: img.height, options: { ...WEBP_OPTS, quality } }, [img.data.buffer]);
+    } catch (e) { webpWorkerFailed(e); }
+  }));
+  webpQueue = job.catch(() => {});
+  return job;
 }
 
 function schedule(delay = 140) { clearTimeout(timer); timer = setTimeout(run, delay); }
@@ -600,13 +634,13 @@ async function run() {
   await new Promise(r => setTimeout(r, 15));
   if (id !== runId) return;
   try {
-    const g = geometry(), t0 = performance.now(), r = await encode(S, g);
+    const g = geometry(), t0 = performance.now(), r = await encode(S, g, () => id !== runId);
     if (id !== runId) return;
     result = r;
     await paint(g, r);
     if (id !== runId) return;
     report(g, r, performance.now() - t0);
-  } catch (e) { result = null; $('rBig').textContent = '–'; $('rSub').textContent = 'Could not encode this image: ' + e.message; console.error(e); }
+  } catch (e) { if (id !== runId) return; result = null; $('rBig').textContent = '–'; $('rSub').textContent = 'Could not encode this image: ' + e.message; console.error(e); }
 }
 
 async function paint(g, r) {
@@ -750,7 +784,7 @@ function syncUI() {
   const p8 = S.format === 'png8', fixed = S.reduction === 'bw';
   $('secP8').hidden = !p8; $('secTable').hidden = !p8; const wp = S.format === 'webp'; $('secJ').hidden = S.format !== 'jpeg' && !wp;
   $('qTitle').textContent = wp ? 'WebP' : 'JPEG';
-  $('qNote').textContent = wp ? "Encoded by your browser's WebP encoder. Safari cannot encode WebP."
+  $('qNote').textContent = wp ? (webpNative ? "Encoded by your browser's WebP encoder." : "Encoded by the bundled libwebp encoder, because this browser cannot encode WebP itself. It is slower than a built-in encoder.")
     : "Encoded by your browser's JPEG encoder, so Progressive and Optimized switches are not available.";
   $('rowTrans').hidden = S.format === 'jpeg';
   $('colors').disabled = $('colors_r').disabled = fixed;

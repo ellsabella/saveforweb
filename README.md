@@ -32,15 +32,21 @@ images are read as their first frame only.
   shift by a level or so. "Lossless" in the app means lossless relative to those
   decoded pixels.
 - JPEG and WebP are encoded by the browser's own encoders, so there are no Progressive
-  or Optimized switches, and WebP output needs a browser that can encode it (Chrome,
-  Edge and Firefox can; Safari cannot, and the app says so instead of saving).
+  or Optimized switches.
+- Safari cannot encode WebP itself, so there the app loads a bundled WebAssembly build
+  of libwebp (about 320 KB, fetched only when needed) and runs it in a Web Worker so
+  the page stays responsive. It is slower than a built-in encoder, its output differs
+  slightly from Chrome's at the same quality, and it does not work when `index.html`
+  is opened directly from disk. Add `?wasmwebp` to the URL to force
+  this encoder in any browser.
 - Optimise to file size can raise the quality or colour count if the file is already
   under the target.
 
 ## Structure
 
-The whole app is `index.html` (markup, styles and script in one file). There are no
-npm dependencies and no build step. The page loads two fonts from Google Fonts and
+The whole app is `index.html` (markup, styles and script in one file). The WebP
+fallback adds `webp-worker.js` and `vendor/webp/`, a copy of the libwebp encoder from
+[@jsquash/webp](https://github.com/jamsinclair/jSquash) (licences are in that folder). There are no npm dependencies and no build step. The page loads two fonts from Google Fonts and
 falls back to system fonts when offline; no image data is ever sent anywhere.
 
 ## Run locally
